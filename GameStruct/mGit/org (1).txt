@@ -1,0 +1,393 @@
+//24.1.26  9：00
+//未完成
+//*现在的效果是把小球显示出来但是update还没有完成 
+//24.1.26 10：00
+//*现在的效果是使用Json实现组件通讯，小球旋转渲染和物理模型实现同步
+//*但是墙还没做
+#include <iostream>
+#include <math.h>
+#include <unordered_set>
+#include <vector>
+#include <string>
+#include "SDL.h"
+#include "SDL_image.h"
+#include "SDL_ttf.h"
+using namespace std;
+
+//全局变量区
+SDL_Window* win = NULL;
+SDL_Renderer* renderer = NULL;
+SDL_Surface* surf = NULL;
+SDL_Surface* icon = NULL;
+SDL_Texture* texture = NULL;
+int WINWIDTH = 1024;
+int WINHEIGHT = 526;
+int thickness = 15;
+int Paddlength = 200;
+int DelayMS = 20;
+
+
+enum POST { FULLSCREEN, ORIGINAL };
+enum Order { Buttom = 5, Middle = 10, Top = 15 };
+//好的抽象
+//还可以作为模块间通信数据
+struct Json
+{
+    //把物理数据抽象出来
+    SDL_Point velocity;
+    SDL_Point center;//中心位置
+    bool Rotated;
+    int angle;
+    int RotationSpeed;
+    int width;
+    int height;
+};
+//给出标准JSON生成函数，免得手写无用的JSON
+Json StandJson()
+{
+    Json stand;
+    stand.velocity = { 0,0 };
+    stand.center = { 0,0 };
+    stand.Rotated = false;
+    stand.angle = 0;
+    stand.RotationSpeed = 0;
+    stand.width = 10;
+    stand.height = 10;
+    return stand;
+}
+
+class Comp
+{
+public:
+    Comp(Json  jsoninput, Order UpDateOrder, string ID) :compjson(jsoninput), UpDateOrder(UpDateOrder)
+        , ID(ID) {}
+    Order UpDateOrder;
+    string ID;
+    Json compjson;
+};
+
+class SpriteComp :public Comp
+{
+public:
+    SpriteComp(Json jsoninput, Order UpOrder, string ID, SDL_Texture* texture, POST inpost) :
+        Comp(jsoninput, UpOrder, ID)
+    {
+        mtexture = texture;
+        post = inpost;
+    }
+    ~SpriteComp()
+    {
+        SDL_DestroyTexture(mtexture);
+    }
+    void Update(float deltime)
+    {
+        if (compjson.Rotated)
+        {
+            compjson.angle += (int)(deltime * compjson.RotationSpeed + 1);
+        }
+    }
+    void LoadingJson(Json input)
+    {
+        compjson = input;
+    }
+    void Draw(SDL_Renderer* renderer)
+    {
+        if (mtexture && !compjson.Rotated)//对于不旋转的图形
+        {
+
+            int screenX = compjson.center.x - compjson.width / 2;
+            int screenY = compjson.center.y - compjson.height / 2;
+            SDL_Rect destRect = { screenX, screenY,compjson.width,compjson.height };
+            switch (post)
+            {
+            case ORIGINAL:
+                SDL_RenderCopy(renderer, mtexture, nullptr, &destRect);
+                break;
+            case FULLSCREEN:
+                SDL_RenderCopy(renderer, mtexture, NULL, NULL);
+                break;
+            }
+        }
+        if (mtexture && compjson.Rotated)//对于旋转的图形
+        {
+
+            int screenX = compjson.center.x - compjson.width / 2;
+            int screenY = compjson.center.y - compjson.height / 2;
+            SDL_Rect destRect = { screenX, screenY,compjson.width,compjson.height };
+            switch (post)
+            {
+            case ORIGINAL:
+                SDL_RenderCopyEx(renderer, mtexture, nullptr, &destRect,
+                    compjson.angle, nullptr, SDL_FLIP_NONE);
+                break;
+            case FULLSCREEN:
+                SDL_RenderCopyEx(renderer, mtexture, NULL, NULL,
+                    compjson.angle, nullptr, SDL_FLIP_NONE);
+                break;
+            }
+        }
+
+    }
+    SDL_Texture* mtexture;
+    POST post;
+};
+
+class BallPhyComp :public Comp
+{
+public:
+    BallPhyComp(Json inputJson, Order UpOrder, string ID,int R) :Comp(inputJson, UpOrder,ID), r(R)
+    {
+        left = { compjson.velocity.x - r,compjson.velocity.y };
+        right = { compjson.velocity.x + r,compjson.velocity.y };
+        top = { compjson.velocity.x,compjson.velocity.y - r };
+        buttom = { compjson.velocity.x,compjson.velocity.y + r };
+    }
+    void update(float deltime) {
+        compjson.center.x += (int)(compjson.velocity.x * deltime);
+        compjson.center.y += (int)(compjson.velocity.y * deltime);
+        if (compjson.Rotated)
+        {
+            compjson.angle += (int)(deltime * compjson.RotationSpeed + 1);
+        }
+    }
+    Json JsonGenerate()
+    {
+        return compjson;
+    }
+    int Collision(SDL_Rect* rect)//左边：-1 右边+1，上面：-2 下面：+2
+    {
+        if (SDL_PointInRect(&left, rect) && compjson.velocity.x < 0)
+            return  -1;
+        if (SDL_PointInRect(&right, rect) && compjson.velocity.x > 0)
+            return  1;
+        if (SDL_PointInRect(&left, rect) && compjson.velocity.y < 0)
+            return -2;
+        if (SDL_PointInRect(&left, rect) && compjson.velocity.y > 0)
+            return  2;
+
+    }
+    int r;
+    SDL_Point left;
+    SDL_Point right;
+    SDL_Point top;
+    SDL_Point buttom;
+};
+
+//class WallPhyComp :public Comp
+//{
+//public:
+//    WallPhyComp() {}
+//    WallPhyComp(Actor* actor, Order UpOrder) :Comp(actor, UpOrder)
+//    {
+//        rect = { Position.x - width / 2,Position.y - height / 2 , width, height };
+//    }
+//    void update(float deltime) {
+//        Position.x += (int)(velocity.x * deltime);
+//        Position.y += (int)(velocity.y * deltime);
+//    }
+//    SDL_Rect rect;
+//};
+
+
+
+
+class Actor
+{
+public:
+    //拓展时，注意actor的构造函数,
+    //注意拓展是要写上无参构造函数不然的话这给actor的构造带来很大麻烦 
+    Actor(string ID,Json actorjson):
+        ID(ID), ActorJson(actorjson)
+    {
+        actorsprite = NULL;
+        actorBallPhy = NULL;
+    }
+    void Update(float deltime);
+
+    //——————PHY————————
+    Json ActorJson;
+    //_______________________________
+    string ID;
+    //根据需求进行拓展管理
+    SpriteComp* actorsprite;
+    BallPhyComp* actorBallPhy;
+    //哪怕是墙也会有球的物理 核心 
+    //这就是这样编程的不好之处不过还好我们有ID可以辨别 
+};
+
+
+
+
+
+
+class Game
+{
+public:
+    Game()
+    {
+        IsRunning = true;
+        mTicksCount = 0;
+    }
+    bool Initialize()
+    {
+        int sdlresult = SDL_Init(SDL_INIT_VIDEO);
+        sdlresult += IMG_Init(IMG_INIT_PNG);
+        if (sdlresult < 0)
+        {
+            SDL_Log("Loading failed!:%s", SDL_GetError());
+        }
+        win = SDL_CreateWindow("Pong!", 100, 100,WINWIDTH, WINHEIGHT, SDL_WINDOW_SHOWN);
+        renderer = SDL_CreateRenderer(win, -1,
+            SDL_RENDERER_ACCELERATED);
+        surf = IMG_Load("PaddleBall.png");
+        if (surf == NULL)
+        {
+            SDL_Log("cannot find png!\n");
+            return false;
+        }
+        //使用材质作为徽标
+        SDL_SetWindowIcon(win, surf);
+        return true;
+    }
+    void RunLoop()
+    {
+        while (IsRunning)
+        {
+            ProcessInput();
+            UpdateGame();
+            Generateoutput();//一般把图形绘制代码放在这里
+            SDL_Delay(DelayMS);
+
+            //一般的即使生成不加这个delay
+        }
+    }
+    void Shutdown()
+    {
+        SDL_DestroyWindow(win);
+        SDL_DestroyRenderer(renderer);
+        //TTF_CloseFont(font);
+        SDL_FreeSurface(surf);
+        SDL_Quit();//关闭这个库
+    }
+    //这个是有必要保留的，毕竟绘画有顺序
+    size_t SpritesNum()
+    {
+        return mSprites.size();
+    }
+    //_______________
+    void ProcessInput()
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            //event会储存从消息队列里移除的消息
+            switch (event.type)
+            {
+            case SDL_QUIT:
+                IsRunning = false;
+                break;
+            }
+        }
+    }
+    void UpdateGame();
+    void Generateoutput();
+    
+    Uint32 mTicksCount;
+    bool IsRunning;
+    //________________
+    vector<SpriteComp*> mSprites;//这个是简单的绘画精灵集合
+    vector<Actor*>      mActors;
+
+};
+Game game;
+
+
+Actor ActorInitBall()
+{
+    string Ball = "pinpong";
+    Json command = StandJson();
+    command.center = { 20,0 };
+    command.Rotated = true;
+    command.width = 30;
+    command.height = 30;
+    command.RotationSpeed = 120;
+    command.velocity = { 240,245 };
+    Actor pinpong(Ball,command);
+
+    surf = IMG_Load("pinpong.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SpriteComp*  tempprite = new SpriteComp{command,Order::Top,Ball,texture,POST::ORIGINAL};
+    pinpong.actorsprite = tempprite;
+
+    BallPhyComp* tempcomp = new BallPhyComp{command,Order::Top,Ball,command.width/2 };
+    pinpong.actorBallPhy = tempcomp;
+
+    return pinpong;
+}
+
+
+
+
+
+int main(int argc, char* argv[])
+{
+   
+    bool success = game.Initialize();
+    //_______________________________
+    Actor pinpong = ActorInitBall();
+    game.mActors.push_back(&pinpong);
+    if (success)
+    {
+        game.RunLoop();
+    }
+    game.Shutdown();
+    return 0;
+}
+
+void Actor::Update(float deltime)
+{
+    actorsprite->Update(deltime);
+    //根据ID分类
+    if (ID == "pinpong")
+    {
+        actorBallPhy->update(deltime);
+        cout << deltime << endl;
+        cout << actorBallPhy->JsonGenerate().center.x << "\t"
+            << actorBallPhy->JsonGenerate().center.y << endl;
+        //物理组件Json更新以后，要直接把绘画组件同步
+        actorsprite->LoadingJson(actorBallPhy->JsonGenerate());
+
+        //碰撞检测还没做
+        //因为墙还没做
+    } 
+}
+
+void Game::UpdateGame()
+{
+    float deltaTime = (SDL_GetTicks() - mTicksCount) / 1000.0f;
+    mTicksCount = SDL_GetTicks();
+
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)
+    {
+        (*iter)->Update(deltaTime);
+    }
+}
+
+void Game::Generateoutput()
+{
+
+    SDL_RenderClear(renderer); // 清空渲染器
+    SDL_SetRenderDrawColor(renderer, 0, 120, 215, 100);
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)
+    {
+        (*iter)->actorsprite->Draw(renderer);
+    }
+
+
+    SDL_RenderPresent(renderer);
+}
+

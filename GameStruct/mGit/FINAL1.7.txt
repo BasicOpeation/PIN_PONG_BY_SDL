@@ -1,0 +1,1020 @@
+//重写DRAWCOMP之前
+
+#include <iostream>
+#include <math.h>
+#include <unordered_set>
+#include <vector>
+#include <string>
+#include "SDL.h"
+#include "SDL_image.h"
+#include "SDL_ttf.h"
+using namespace std;
+//_______________GameStruct_____________________
+SDL_Window* win = NULL;
+SDL_Renderer* renderer = NULL;
+SDL_Surface* surf = NULL;
+SDL_Surface* icon = NULL;
+SDL_Texture* texture = NULL;
+int WINWIDTH = 800;
+int WINHEIGHT = 400;
+TTF_Font* font =NULL;
+int DelayMS = 20;
+enum COMPTYPE { TDrawer, TPhyics, TWacther, TTrigger,TTexter};
+enum class GameState {MainMenu,GamePlay,GameOver,Quit};
+//建议改名为flag
+union Type
+{
+    //声明部分
+    enum _BALLTYPE { Free, LeftTied, Righted };
+    enum _PADDLETYPE { Left, Right };    
+    struct ScoreBoard
+    {
+        int leftScore;
+        int rightScore;
+    };
+    struct _Button
+    {
+        SDL_Color inColor;
+        SDL_Color OutColor;
+    };
+    //使用部分
+    _BALLTYPE ball_type;
+    _PADDLETYPE paddle_type;
+    ScoreBoard scoreboard;
+    _Button button;
+};
+
+struct PhyJson
+{   //把物理数据抽象出来,并进行预先赋值
+    SDL_Point velocity = { 0,0 };
+    SDL_Point center = { 0,0 };
+    string name = "NULLER";
+    bool Rotated = false;
+    float angle = 0;
+    float RotationSpeed = 0;
+    int width = 30;
+    int height = 30;
+    //这个是标准的对象多状态声明处
+    Type Json_Type;
+};
+
+class Comp
+{
+public:
+    Comp(PhyJson* jsonptr, COMPTYPE _comptype) :Phy_Comp(jsonptr)
+    {
+        comptype = _comptype;
+    }
+    virtual void HanderEvent(SDL_Event* event, PhyJson* TagetPhy) {
+        cout << "Havnt override!" << endl;
+    }
+    virtual void UpDate(PhyJson* jsonptr, float deltaime) {
+        cout << "Havnt override!" << endl;
+    }
+    virtual void TiggerIt(PhyJson* jsonptr, PhyJson* tagetjson) {
+        cout << "Havnt override!" << endl;
+    }
+    virtual void Draw(SDL_Renderer* renderer)
+    {
+        cout << "Havnt override!" << endl;
+    }
+    COMPTYPE GetCompType()
+    {
+        return comptype;
+    }
+    PhyJson* Phy_Comp;
+private:
+    COMPTYPE comptype;
+};
+
+class DrawComp :public Comp
+{
+public:
+    DrawComp(PhyJson* jsonptr, SDL_Texture* texture) :
+        Comp(jsonptr, COMPTYPE::TDrawer)
+    {
+        mtexture = texture;
+    }
+    ~DrawComp()
+    {
+        SDL_DestroyTexture(mtexture);
+    }
+    void Draw(SDL_Renderer* renderer) override {
+        if (mtexture)
+        {
+            int screenX = Phy_Comp->center.x - Phy_Comp->width / 2;
+            int screenY = Phy_Comp->center.y - Phy_Comp->height / 2;
+            SDL_Rect destRect = { screenX, screenY,Phy_Comp->width,Phy_Comp->height };
+            SDL_RenderCopyEx(renderer, mtexture, nullptr, &destRect,
+                Phy_Comp->angle, nullptr, SDL_FLIP_NONE);
+            return;
+        }
+        cout << "Texture Not include!" << endl;
+    }
+    SDL_Texture* mtexture;
+};
+
+class TextComp:public Comp
+{//目前统一标准，用一个字体进行渲染
+public:
+    //这个构造时最重要的是中心，因为字体的长宽无法确定，随便填填就行
+    TextComp(PhyJson* jsonptr, string _Text, SDL_Color _textColor):
+        Comp(jsonptr,COMPTYPE::TTexter)
+    {
+        Text = _Text;
+        TextColor = _textColor;
+    }
+    void DrawText(SDL_Renderer* renderer)
+    {
+        font = TTF_OpenFont("Sam3KRFont.ttf", 72);
+        if (font == NULL)
+        {
+            SDL_Log("Init Failed:%s", TTF_GetError());
+            return;
+        }
+            surf = TTF_RenderText_Blended(font, Text.c_str(), TextColor);
+            texture = SDL_CreateTextureFromSurface(renderer, surf);
+            SDL_Rect destRect;
+            SDL_QueryTexture(texture, nullptr, nullptr, &(destRect.w), &(destRect.h));
+            destRect.x = Phy_Comp->center.x - destRect.w / 2;
+            destRect.y = Phy_Comp->center.y - destRect.h / 2;
+            SDL_RenderCopy(renderer, texture, nullptr, &destRect);     
+    }
+    SDL_Color TextColor;
+    string Text;
+};
+
+class SpriteComp :public DrawComp
+{
+public:
+    SpriteComp(PhyJson* jsonptr, SDL_Texture* texture) :
+        DrawComp(jsonptr, texture)
+    {
+        mtexture = texture;
+    }
+    ~SpriteComp()
+    {
+        SDL_DestroyTexture(mtexture);
+    }
+    //还没写，这个专门用于实现动画和粒子效果的
+};
+
+class EventWatcher : public Comp
+{
+public:
+    //传入的函数指针，前一个参数是 事件 后一个参数是要改变的PHYJSON 函数体里有改变方法
+    //不过，一些情况下，可以直接不屑deltaPhy
+    EventWatcher(PhyJson* jsonptr, void (*handler)(SDL_Event* event, PhyJson* actorJson)) :
+        Comp(jsonptr, COMPTYPE::TWacther), eventHandler(handler) {}
+
+    void HanderEvent(SDL_Event* event, PhyJson* ActorJson) override {
+        if (eventHandler) {
+            eventHandler(event, ActorJson); // 调用事件处理函数
+        }
+    }
+    //这么写的话，一个watcher可以监控多个按键了
+    //不过，如果一个对象 要同时监听按键和鼠标 
+    //那还是要注册多个watcher的
+private:
+    void (*eventHandler)(SDL_Event* event, PhyJson* actorJson);
+};
+
+class Trigger :public Comp
+{
+public:
+    //前者是COMP所属的对象的物理参数指针，后者是监视的目标对象的函数指针
+    //最后是触发的函数操作
+    Trigger(PhyJson* jsonptr, PhyJson* tagetjson,
+        void (*BangFun)(PhyJson* jsonptr, PhyJson* tagetjson)
+    ) :Comp(jsonptr, COMPTYPE::TTrigger), Bang(BangFun)
+    {
+        TagetJson = tagetjson;
+    }
+
+    void TiggerIt(PhyJson* jsonptr, PhyJson* tagetjson) override
+    {
+        if (Bang)
+            Bang(Phy_Comp, TagetJson); // 调用事件处理函数
+    }
+
+    PhyJson* TagetJson;
+private:
+    void (*Bang)(PhyJson* jsonptr, PhyJson* tagetjson);
+};
+
+class Physics :public Comp
+{
+public:
+    Physics(PhyJson* jsonptr, void (*ChangeFun)(PhyJson* jsonptr, float deltaime)) :
+        Comp(jsonptr, COMPTYPE::TPhyics), Change(ChangeFun) {}
+    void UpDate(PhyJson* jsonptr, float deltaime) override
+    {
+        if (Change)
+            Change(jsonptr, deltaime);
+    }
+private:
+    void (*Change)(PhyJson* jsonptr, float deltaime);
+};
+
+void Stand_Physics(PhyJson* jsonptr, float deltaime) {
+    /*cout << "PHY:" << jsonptr->velocity.x << "\t" << jsonptr->velocity.y << endl;
+    cout << "deltatime:" << deltaime << endl;*/
+    jsonptr->center.x += (int)(jsonptr->velocity.x * deltaime);
+    jsonptr->center.y += (int)(jsonptr->velocity.y * deltaime);
+    if (jsonptr->Rotated)
+    {
+        jsonptr->angle += deltaime * jsonptr->RotationSpeed;
+    }
+}
+
+void PrintfActor(PhyJson* ActorJson)
+{
+    cout << ActorJson->name << "\tCenter: "
+        << ActorJson->center.x << "\t" << ActorJson->center.y << "\tvel:"
+        << ActorJson->velocity.x << "\t" << ActorJson->velocity.y << endl;
+    cout << endl;
+}
+
+class Actor
+{
+public:
+    Actor(PhyJson* actorjson) :
+        ActorJson(actorjson)
+    {
+        CompStore.clear();
+    }
+    //返回某类型组件的所有
+    vector<Comp*> Lookfor_Vector(COMPTYPE _type) {
+        vector<Comp*> TypeVector;
+        TypeVector.clear();
+        for (auto iter : CompStore)
+        {
+            if (iter->GetCompType() == _type)
+            {
+                TypeVector.push_back(iter);
+            }
+        }
+        return TypeVector;
+    }
+    //ACTOR的update是基于演员的组件历遍完成的
+    void ActorInPut(SDL_Event* event)
+    {
+        vector<Comp*> Input = Lookfor_Vector(TWacther);
+        for (auto iter : Input)
+        {
+            iter->HanderEvent(event, ActorJson);
+        }
+    }
+    void ActorUpdate(float deltaTime)
+    {
+        //这里应该检验所有的trigger和Physics
+        vector<Comp*> UpTag = Lookfor_Vector(TTrigger);
+        for (auto iter : UpTag)
+        {
+            iter->TiggerIt(ActorJson, dynamic_cast<Trigger*>(iter)->TagetJson);
+            //强制类型转换，访问多态的子类数据
+        }
+        UpTag = Lookfor_Vector(TPhyics);
+        for (auto iter : UpTag)
+        {
+            iter->UpDate(ActorJson, deltaTime);
+        }
+    }
+    void ActorOutPut()
+    {
+        vector<Comp*> UpTag = Lookfor_Vector(TDrawer);
+        for (auto iter : UpTag)
+        {
+            iter->Draw(renderer);
+        }       
+        UpTag = Lookfor_Vector(TTexter);
+        for (auto iter : UpTag)
+        {
+            dynamic_cast<TextComp*>(iter)->DrawText(renderer);
+        }
+    }
+
+    PhyJson* ActorJson;
+    vector<Comp*> CompStore;
+};
+
+class Pipe {
+//这个类的目的是收集和查询，而非更改
+public:
+    Pipe()
+    {
+        Json_Stash.clear();
+    }
+    void Add(PhyJson* input)
+    {
+        Json_Stash.push_back(input);
+    }
+    //查找功能
+    PhyJson* Find(string name)
+    {
+        for (auto iter : Json_Stash)
+        {
+            if (iter->name == name)
+                return iter;
+        }
+        return NULL;
+    }
+    //感觉很可以多写几个查找功能
+private:
+    vector<PhyJson*> Json_Stash;
+};
+Pipe BusPipe;
+
+class CompPipe
+{
+public:
+    CompPipe()
+    {
+        Comp_Stash.clear();
+    }
+    void Add(Comp* input)
+    {
+        Comp_Stash.push_back(input);
+    }
+    //查找功能
+    Comp* Find(string name)
+    {
+        for (auto iter : Comp_Stash)
+        {//统一name的功能真的很强大
+            if (iter->Phy_Comp->name == name)
+                return iter;
+        }
+        return NULL;
+    }
+    //感觉很可以多写几个查找功能
+private:
+    vector<Comp*> Comp_Stash;
+};
+CompPipe BusCompPipe;
+
+class Game
+{
+public:
+    Game()
+    {
+        IsRunning = true;
+        mTicksCount = 0;    
+        state = GameState::GamePlay;
+    }
+    ~Game()
+    {
+        GClear();
+    }
+    bool Initialize()
+    {
+        int sdlresult = SDL_Init(SDL_INIT_VIDEO);
+        sdlresult += IMG_Init(IMG_INIT_PNG);
+        if (TTF_Init() < 0)
+        {
+
+            SDL_Log("Init Failed:%s", TTF_GetError());
+            return false;
+        }
+        if (sdlresult < 0)
+        {
+            SDL_Log("Loading failed!:%s", SDL_GetError());
+        }
+        win = SDL_CreateWindow("Pong!", 100, 100, WINWIDTH, WINHEIGHT, SDL_WINDOW_SHOWN);
+        renderer = SDL_CreateRenderer(win, -1,
+            SDL_RENDERER_ACCELERATED);
+        //徽标加载
+        surf = IMG_Load("PaddleBall.png");
+        if (surf == NULL)
+        {
+            SDL_Log("cannot find png!\n");
+            return false;
+        }
+        //使用材质作为徽标
+        SDL_SetWindowIcon(win, surf);
+        return true;
+    }
+    void RunLoop()
+    {
+        while (IsRunning)
+        {
+            ProcessInput();
+            UpdateGame();
+            Generateoutput();
+            SDL_Delay(DelayMS);
+            //一般的即使生成不加这个delay
+        }
+    }
+    void Shutdown()
+    {
+        SDL_DestroyWindow(win);
+        SDL_DestroyRenderer(renderer);
+        //TTF_CloseFont(font);
+        SDL_FreeSurface(surf);
+        SDL_Quit();//关闭这个库
+    }
+    //_______________
+    void ProcessInput();
+    void UpdateGame();
+    void Generateoutput();
+    //_________________________
+    void SetActors(vector<Actor*> actors)
+    {
+        for (auto iter : actors)
+        {
+            mActors.push_back(iter);
+        }
+    }
+    void GClear()
+    {
+        for (auto iter : mActors)
+        {
+            delete iter;
+        }
+        for (auto iter : SpriteStore)
+        {
+            delete iter;
+        }
+        mActors.clear();
+        SpriteStore.clear();
+    }
+    Uint32 mTicksCount;
+    bool IsRunning;
+    //___________________________
+    vector<Actor*>           mActors;
+    vector<SpriteComp*>  SpriteStore;
+    GameState               state;
+};
+Game game;
+
+bool checkSameSign(int a, int b) {
+    if (a == 0 || b == 0)
+        return true;
+    //一个符号是0，则判断相等
+    return (a > 0 && b > 0) || (a < 0 && b < 0);
+}
+//————————————————————————对象层_GAME————————————————————————————————————————
+int thickness = 25;
+int Paddlength = 150;
+int PaddleSpeed = 40;
+SDL_Color VS_BLUE = { 0,108,190 };
+SDL_Color VS_Pupple = { 134,95,197 };
+int WinGames = 3;
+
+void  Paddle_KeyHandler(SDL_Event* event, PhyJson* TagetPhy)
+{    
+    const Uint8* state = SDL_GetKeyboardState(NULL);
+    //是的，你没有看错，我们传入event只是为了形式统一罢了
+    //我已经试过，用event来处理键盘事件，事实证明，这太蠢了
+    SDL_Scancode WatcherKeyUp = SDL_SCANCODE_UNKNOWN;
+    SDL_Scancode WatcherKeyDown = SDL_SCANCODE_UNKNOWN;
+    if (TagetPhy->Json_Type.paddle_type == Type::_PADDLETYPE::Left)
+    {
+        WatcherKeyUp = SDL_SCANCODE_W;
+        WatcherKeyDown = SDL_SCANCODE_S;
+    }
+    if (TagetPhy->Json_Type.paddle_type == Type::_PADDLETYPE::Right)
+    {
+        WatcherKeyUp = SDL_SCANCODE_UP;
+        WatcherKeyDown = SDL_SCANCODE_DOWN;
+    }
+    
+    if (state[WatcherKeyUp] && state[WatcherKeyDown])
+    {
+        TagetPhy->velocity.y = 0;
+        return;
+    }
+    if (state[WatcherKeyUp]) {
+        TagetPhy->velocity.y = -150;
+        return;
+    }
+    if (state[WatcherKeyDown]) {
+        TagetPhy->velocity.y = 150;
+        return;
+    }
+    
+    PhyJson* Balljson = BusPipe.Find("Ball");
+    if (Balljson == NULL)
+    {//安全第一，不是吗
+        cout << "Cant Find Ball In BusPipe";
+        return;
+    }
+        
+    if (state[SDL_SCANCODE_SPACE] &&
+        (Balljson->Json_Type.ball_type == Type::LeftTied
+            || Balljson->Json_Type.ball_type == Type::Righted))
+    {
+        Balljson->Rotated = true;
+        if (Balljson->Json_Type.ball_type == Type::LeftTied)
+        {
+            SDL_Point vel;
+            vel.x = SDL_GetTicks() % 400 + 200;// 水平方向的速度是200到400
+            vel.y = SDL_GetTicks() % 100 + TagetPhy->velocity.y;//增加一点不确定度
+            Balljson->velocity = vel;
+            Balljson->RotationSpeed =(float) (TagetPhy->velocity.y) ;
+        }
+        if (Balljson->Json_Type.ball_type == Type::Righted)
+        {
+            SDL_Point vel;
+            vel.x = (SDL_GetTicks() % 400)*(-1) - 200;
+            vel.y = SDL_GetTicks() % 100 + TagetPhy->velocity.y;            
+            Balljson->velocity = vel;
+            Balljson->RotationSpeed = (float)(TagetPhy->velocity.y) ;
+        }
+        Balljson->Json_Type.ball_type = Type::Free;
+        //PrintfActor(Balljson);
+        return;
+    }
+    TagetPhy->velocity.y = 0;//都没按？那就把速度归零
+}
+
+void Paddle_Phy(PhyJson* jsonptr, float deltaime) {
+
+    jsonptr->center.x += (int)(jsonptr->velocity.x * deltaime);
+    jsonptr->center.y += (int)(jsonptr->velocity.y * deltaime);
+    if (jsonptr->Rotated)
+    {
+        jsonptr->angle += deltaime * jsonptr->RotationSpeed;
+    }
+}
+//x 1/31：在这里加入物理拟真效果：板的速度方向会对球产生影响
+void  Paddle_Trigger(PhyJson* jsonptr, PhyJson* tagetjson)
+{     
+    /*cout << "While Paddle Triggering:" << jsonptr->name << "\tV:"
+        << jsonptr->velocity.x << "\t" << jsonptr->velocity.y << endl;*/
+    //此函数注入于板，用于判断板是否和球碰撞
+    //先判断球的状态
+    int r = tagetjson->width / 2;//这里引发了异常：tagetjison是nullptr!
+    //球的上下左右点    
+    //这里搞错了，jsonptr是板的属性，taget是要监视的对象的属性
+    SDL_Point left = { tagetjson->center.x - r,tagetjson->center.y };
+    SDL_Point right = { tagetjson->center.x + r,tagetjson->center.y };
+    SDL_Point top = { tagetjson->center.x,tagetjson->center.y - r };
+    SDL_Point buttom = { tagetjson->center.x,tagetjson->center.y + r };
+    //砖的区域
+    SDL_Rect rect = { jsonptr->center.x - jsonptr->width / 2,
+                   jsonptr->center.y - jsonptr->height / 2,
+                   jsonptr->width,jsonptr->height };
+    //多状态讨论
+    int Rate = 2;
+    //速度转换比率
+    switch (tagetjson->Json_Type.ball_type)
+    {
+    case Type::_BALLTYPE::Free:   
+        if (SDL_PointInRect(&left, &rect) && tagetjson->velocity.x < 0)
+        {
+            tagetjson->velocity.x *= -1;
+            if (checkSameSign(tagetjson->velocity.y, jsonptr->velocity.y))
+            {
+                tagetjson->velocity.y += jsonptr->velocity.y / Rate;
+            }
+            else {
+                tagetjson->velocity.y -= jsonptr->velocity.y / Rate;
+            }
+            //以及旋转速度的模拟
+            if (tagetjson->velocity.y > 0 )
+            {
+                tagetjson->RotationSpeed += jsonptr->velocity.y / Rate;
+            }
+            else
+            {
+                tagetjson->RotationSpeed -= jsonptr->velocity.y / Rate;
+            }           
+        }         
+        if (SDL_PointInRect(&right, &rect) && tagetjson->velocity.x > 0)
+        {
+            tagetjson->velocity.x *= -1;
+            if (checkSameSign(tagetjson->velocity.y, jsonptr->velocity.y))
+            {
+                tagetjson->velocity.y += jsonptr->velocity.y / Rate;
+            }
+            else {
+                tagetjson->velocity.y -= jsonptr->velocity.y / Rate;
+            }
+            //以及旋转速度的模拟
+            if (tagetjson->velocity.y > 0)
+            {
+                tagetjson->RotationSpeed += jsonptr->velocity.y / 10;
+            }
+            else
+            {
+                tagetjson->RotationSpeed -= jsonptr->velocity.y / 10;
+            }
+        }           
+        if (SDL_PointInRect(&top, &rect) && tagetjson->velocity.y < 0)
+            tagetjson->velocity.y *= -1;
+        if (SDL_PointInRect(&buttom, &rect) && tagetjson->velocity.y > 0)
+            tagetjson->velocity.y *= -1;
+        break;
+    case Type::_BALLTYPE::LeftTied:
+        if (jsonptr->Json_Type.paddle_type == Type::_PADDLETYPE::Left)
+        {//如果是左边板，而且球绑在左边
+            tagetjson->center = {jsonptr->center.x+thickness,
+                                 jsonptr->center.y};
+        }
+        break;
+    case Type::_BALLTYPE::Righted:
+        if (jsonptr->Json_Type.paddle_type == Type::_PADDLETYPE::Right)
+        {//如果是右边板，而且球绑在右边
+            tagetjson->center = { jsonptr->center.x - thickness ,
+                                 jsonptr->center.y };
+        }
+        break;
+    default:
+
+        break;
+    }
+
+}
+
+void Ball_Phy(PhyJson* jsonptr, float deltaime)
+{
+    switch (jsonptr->Json_Type.ball_type)
+    {
+    case Type::_BALLTYPE::Free:
+        jsonptr->center.x += (int)(jsonptr->velocity.x * deltaime);
+        jsonptr->center.y += (int)(jsonptr->velocity.y * deltaime);
+        if (jsonptr->Rotated)
+        {
+            jsonptr->angle += deltaime * jsonptr->RotationSpeed;
+        }
+        break;
+    case Type::_BALLTYPE::LeftTied:
+        //看来这个要借助触发器来写；
+        //这个占位的作用就是告诉Ball_Phy 不要动就行
+        break;
+    case Type::_BALLTYPE::Righted:
+        break;
+    default:
+        break;
+    }
+    //状态判断
+    if (jsonptr->center.x < -thickness|| jsonptr->center.x > WINWIDTH+thickness)
+    {        
+        jsonptr->velocity = { 0,0 };
+        jsonptr->Rotated = false;
+        if (jsonptr->center.x < -thickness)
+            jsonptr->Json_Type.ball_type = Type::_BALLTYPE::LeftTied;        
+        if(jsonptr->center.x > WINWIDTH+thickness)
+            jsonptr->Json_Type.ball_type = Type::_BALLTYPE::Righted;
+        //!记得再发球的时候，把这些状态改回来
+    }   
+      
+}
+//! Ball的重置还为score trigger留了一段空间嘞
+Actor* Ballnit()
+{
+    
+    //对象基本信息声明
+    PhyJson* Ballptr = new PhyJson;
+    //注入总管道
+    BusPipe.Add(Ballptr);
+    Ballptr->velocity = { 250,40 };
+    Ballptr->center = { WINWIDTH /2,4*WINHEIGHT / 5 };
+    Ballptr->name = "Ball";
+    Ballptr->Rotated = true;
+    Ballptr->RotationSpeed = 300;
+    Ballptr->height = 30;
+    Ballptr->width = 30;
+    Ballptr->Json_Type.ball_type = Type::_BALLTYPE::Free;
+    //组件建造（蓝图注入）
+    surf = IMG_Load("pinpong.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    Actor* Ball=new Actor(Ballptr);
+
+    Comp* Ball_Draw = new DrawComp(Ballptr, texture);
+
+    Comp* Ball_Physics = new Physics(Ballptr, Ball_Phy);
+
+    //对象声明+组件注入
+    
+    Ball->CompStore.push_back(Ball_Draw);
+    Ball->CompStore.push_back(Ball_Physics);
+
+    return Ball;
+}
+
+Actor* WallInit(SDL_Point center, SDL_Point width_height, PhyJson* tagetjson)
+{
+    PhyJson* Wall = new PhyJson;
+    BusPipe.Add(Wall);
+    Wall->center = center;
+    Wall->name = "Wall";
+    Wall->height = width_height.y;
+    Wall->width = width_height.x;
+    //这个不用装载绘画模块，但是要装载球触发器
+    Comp* wall_trigger = new Trigger(Wall, tagetjson, Paddle_Trigger);
+    Actor* Wall_p=new Actor(Wall);
+    Wall_p->CompStore.push_back(wall_trigger);
+
+    return Wall_p;
+}
+//！ 这个函数可以做通用函数
+SpriteComp* BackRoundSpriteInit(string Loadingname)
+{
+    PhyJson* Backroundptr = new PhyJson;
+    Backroundptr->center = { WINWIDTH / 2,WINHEIGHT / 2 };
+    Backroundptr->name = "Backround";
+    Backroundptr->width = WINWIDTH;
+    Backroundptr->height = WINHEIGHT;
+
+    surf = IMG_Load(Loadingname.c_str());
+
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SpriteComp* Backround=new SpriteComp(Backroundptr, texture);
+
+    return Backround;
+}
+
+Actor* PaddleInit(Type::_PADDLETYPE ptype, PhyJson* tagetjson)
+{
+    PhyJson* Paddle = new PhyJson;
+    BusPipe.Add(Paddle);
+    Paddle->width = thickness;
+    Paddle->height = Paddlength;
+    switch (ptype)
+    {
+    case Type::Left:
+        Paddle->center = { WINWIDTH / 10,WINHEIGHT / 2 };
+        Paddle->name = "LeftPaddle";
+        Paddle->Json_Type.paddle_type = Type::_PADDLETYPE::Left;
+        break;
+    case Type::Right:
+        Paddle->center = { 9 * WINWIDTH / 10,WINHEIGHT / 2 };
+        Paddle->name = "RightPaddle";
+        Paddle->Json_Type.paddle_type = Type::_PADDLETYPE::Right;
+        break;
+    }
+    //把一个方形区域注册为surf,并返回指针
+
+    surf = SDL_CreateRGBSurface(0, Paddle->width, Paddle->height, 32, 0, 0, 0, 0);
+    SDL_FillRect(surf, NULL, SDL_MapRGB(surf->format, 255, 0, 0));
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    Comp* PaddleDrawer = new DrawComp(Paddle, texture);
+
+    Comp* Paddle_trigger = new Trigger(Paddle, tagetjson, Paddle_Trigger);
+
+    Comp* Paddle_Watcher = new EventWatcher(Paddle, Paddle_KeyHandler);
+
+    Comp* Paddle_Physics = new Physics(Paddle, Paddle_Phy);
+    Actor* APaddle=new Actor(Paddle);
+    APaddle->CompStore.push_back(PaddleDrawer);
+    APaddle->CompStore.push_back(Paddle_trigger);
+    APaddle->CompStore.push_back(Paddle_Watcher);
+    //又发现一个BUG：没有装载PHYCOMP
+    APaddle->CompStore.push_back(Paddle_Physics);
+    return APaddle;
+}
+
+void Score_Trigger_Fun(PhyJson* jsonptr, PhyJson* Balljson)
+{    
+    //这个积分板里，jsonptr还是有点用的，那个TYPE联合体可以用来记分
+    // 记完分之后要立刻跳转    
+    if(Balljson->center.x<0)
+    { 
+        jsonptr->Json_Type.scoreboard.rightScore++;
+        Balljson->center.x = -2 * thickness;
+        //赶快把球送到触发区域，避免多次触发
+    }
+    if (Balljson->center.x > WINWIDTH)
+    {
+        jsonptr->Json_Type.scoreboard.leftScore++; 
+        Balljson->center.x = WINWIDTH + 2 * thickness;
+    }    
+}
+
+void Score_Phy_Fun(PhyJson* jsonptr, float deltaime)
+{
+    //这个的作用就是同步string和TYPE中的数字
+    //这个时候就要用管道来找到COMP指针了
+    Comp* iter = BusCompPipe.Find("ScoreBoard");
+    //管道，真好用
+    //cout << dynamic_cast<TextComp*>(iter)->Text << endl;
+    //这个是把scoreboard的textcomp的text改变
+    if (jsonptr->Json_Type.scoreboard.leftScore != 0 ||
+        jsonptr->Json_Type.scoreboard.rightScore != 0)
+    {
+        dynamic_cast<TextComp*>(iter)->Text = to_string(jsonptr->Json_Type.scoreboard.leftScore)
+            + " : " + to_string(jsonptr->Json_Type.scoreboard.rightScore);
+    }
+    //胜利判定
+    if (jsonptr->Json_Type.scoreboard.leftScore == WinGames)
+        dynamic_cast<TextComp*>(iter)->Text = "LEFT WIN!!!";
+    if(jsonptr->Json_Type.scoreboard.rightScore == WinGames)
+        dynamic_cast<TextComp*>(iter)->Text = "RIGHT WIN!!!";
+}
+
+Actor* Score_IndicatorInit(PhyJson* Balljsonptr,string inname)
+{
+    int ScorHegiht = 50;
+    //这个抽象的对象需要PHY吗？还是需要的，毕竟它要被画出来
+    PhyJson* Scoreptr = new PhyJson;
+    Scoreptr->name = inname;
+    Scoreptr->Json_Type.scoreboard = { 0,0 };
+    Scoreptr->center.x = WINWIDTH / 2;
+    Scoreptr->center.y = ScorHegiht / 2;    
+
+    Comp* Score_Phy = new Physics(Scoreptr, Score_Phy_Fun);
+    Comp* Score_TextComp = new TextComp(Scoreptr,"Score", VS_Pupple);
+    //这个要加入管道
+    BusCompPipe.Add(Score_TextComp);
+    Comp* Score_Trigger = new Trigger(Scoreptr,Balljsonptr,Score_Trigger_Fun);
+    Actor* Score=new Actor(Scoreptr);
+    Score->CompStore.push_back(Score_Phy);
+    Score->CompStore.push_back(Score_TextComp);
+    Score->CompStore.push_back(Score_Trigger);
+    //怎么更换图画
+    return Score;
+}
+
+void CoutGameState(GameState _state=game.state)
+{
+    switch (_state)
+    {
+    case GameState::MainMenu:
+        cout << "MainMenu" << endl;
+        break;
+    case GameState::GamePlay:
+        cout << "GamePlay" << endl;
+    }
+}
+
+//状态转换函数还是得用触发器来做，因为PHY自动填入的是actor的json
+void State_Trigger_Fun(PhyJson* jsonptr, PhyJson* ScoreBoardjson)
+{
+    if (ScoreBoardjson->Json_Type.scoreboard.leftScore == WinGames ||
+        ScoreBoardjson->Json_Type.scoreboard.rightScore == WinGames)
+    {
+        game.state = GameState::MainMenu;
+        //我们先跳出循环,才能改变状态，装载变量
+        game.IsRunning = false;
+    }    
+}
+
+Actor* StateChange(PhyJson* Scoreptr)
+{
+    PhyJson* statechange = new PhyJson;
+    Comp* State_Trigger = new Trigger(statechange, Scoreptr, State_Trigger_Fun);
+    Actor* _statechange = new Actor(statechange);
+    _statechange->CompStore.push_back(State_Trigger);
+    return _statechange;
+}
+//___________________________TITLE对象层____________________________
+
+
+
+Actor* Button(PhyJson* jsonptr)
+{    
+    Actor* Button = new Actor(jsonptr);
+    //下面需要一个更新mexture的phy函数
+
+
+
+    return NULL;
+}
+//配套的json指针生成函数:对于每个函数可以写不一样的
+PhyJson* Title_Button_1_Gen_Phyjson(SDL_Color inco, SDL_Color outco)
+{
+    PhyJson* buttonptr = new PhyJson;
+    buttonptr->center.x = WINWIDTH / 2;
+    buttonptr->center.y = WINHEIGHT / 2;
+    buttonptr->width = 100;
+    buttonptr->height = 60;
+    buttonptr->Json_Type.button.inColor = inco;
+    buttonptr->Json_Type.button.OutColor = outco;
+    return buttonptr;
+}
+
+
+
+//———————————————————————————界面装载层——————————————————————————————
+void GameInit(Game* game)
+{
+    game->GClear();
+    SpriteComp* backround =BackRoundSpriteInit("table.png");
+    game->SpriteStore.push_back(backround);
+    Actor* pinpong = Ballnit();
+    //看来这种相互耦合关系比较大的，还是得一个一个注入
+    Actor* TopWall = WallInit({ WINWIDTH / 2,-thickness / 2 },
+        { WINWIDTH,thickness }, pinpong->ActorJson);
+    Actor* ButtomWall = WallInit({ WINWIDTH / 2,WINHEIGHT + thickness / 2 },
+        { WINWIDTH,thickness }, pinpong->ActorJson);
+    Actor* PaddleLeft = PaddleInit(Type::Left, pinpong->ActorJson);
+    Actor* PaddleRight = PaddleInit(Type::Right, pinpong->ActorJson);
+    game->mActors.push_back(pinpong);
+    game->mActors.push_back(TopWall);
+    game->mActors.push_back(ButtomWall);
+    game->mActors.push_back(PaddleLeft);
+    game->mActors.push_back(PaddleRight);
+    Actor* ScoreBoard = Score_IndicatorInit(pinpong->ActorJson, "ScoreBoard");
+    game->mActors.push_back(ScoreBoard);    
+    //由计分板触发的状态转换
+    Actor* statechange = StateChange(ScoreBoard->ActorJson);
+    game->mActors.push_back(statechange);
+}
+
+void TitleInit(Game* game)
+{
+    game->GClear();
+    SpriteComp* backround = BackRoundSpriteInit("Title.png");
+    game->SpriteStore.push_back(backround);
+}
+
+//________________________________________________________________
+int main(int argc, char* argv[])
+{
+    
+    if (!game.Initialize())
+        return -114514;
+    GameInit(&game);//这个地方是把对象装载进入game
+    GameState lastState = game.state;//防止重复装载影响运行
+    while (true)
+    {
+        if (game.state != lastState)
+        {//对不上?那就是在上一轮循环的时候状态改变，马上装载新对象
+            switch (game.state)
+            {
+            case GameState::MainMenu:               
+                TitleInit(&game);
+                game.IsRunning = true;
+                break;
+            case GameState::GamePlay:
+                GameInit(&game);
+                game.IsRunning = true;
+                break;
+            case GameState::Quit:
+                goto OUT;
+                break;
+            }
+            lastState = game.state;
+        }
+        game.RunLoop();
+    }
+OUT:
+    SDL_Delay(500);
+    game.GClear();
+    return 0;
+}
+//________________________________________________________________________________________________________________________
+void Game::ProcessInput()
+{
+    SDL_Event event;
+    while (SDL_PollEvent(&event))
+    {
+        //先检测对象的按键
+        for (auto iter : mActors) {
+            iter->ActorInPut(&event);
+        }
+        //event会储存从消息队列里移除的消息
+        switch (event.type)
+        {
+        case SDL_QUIT:
+            IsRunning = false; 
+            state = GameState::Quit;
+            //加上这段代码，退出流畅多了
+            break;
+        case SDL_KEYDOWN:
+            if (event.key.keysym.sym == SDLK_ESCAPE)
+                IsRunning = false;
+            state = GameState::Quit;
+            break;
+        }
+    }
+}
+
+void Game::UpdateGame()
+{
+    float deltaTime = (SDL_GetTicks() - mTicksCount) / 1000.0f;
+    mTicksCount = SDL_GetTicks();
+    //UpDate应该检验所有的Trigger和Physics
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)
+    {
+        (*iter)->ActorUpdate(deltaTime);
+        //所有的对象操作，都应该在类中封装，而不该在GAME的循环中出现
+        //这既符合封装的规范，也让修改和移植方便
+    }
+
+}
+
+void Game::Generateoutput()
+{
+    SDL_RenderClear(renderer); // 清空渲染器
+    SDL_SetRenderDrawColor(renderer, 0, 120, 215, 100);
+    //精灵的绘画
+    for (auto iter = SpriteStore.begin();
+        iter != SpriteStore.end();
+        iter++)
+    {
+        (*iter)->Draw(renderer);
+    }
+
+    //演员的绘画
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)//对象历遍
+    {
+        (*iter)->ActorOutPut();
+    }
+    SDL_RenderPresent(renderer);
+}

@@ -1,0 +1,682 @@
+//把基础的功能做出来了
+//下一步，
+//开发先后手
+//开发球消失自动补充
+//开发记分功能
+//开发切削球
+
+#include <iostream>
+#include <math.h>
+#include <unordered_set>
+#include <vector>
+#include <string>
+#include "SDL.h"
+#include "SDL_image.h"
+#include "SDL_ttf.h"
+using namespace std;
+
+//全局变量区
+SDL_Window* win = NULL;
+SDL_Renderer* renderer = NULL;
+SDL_Surface* surf = NULL;
+SDL_Surface* icon = NULL;
+SDL_Texture* texture = NULL;
+vector<SDL_Rect> WallRect;
+//板的上线是四个；
+int WINWIDTH = 1024;
+int WINHEIGHT = 540;
+int thickness = 25;
+int Paddlength = 150;
+int PaddleSpeed = 30;
+int DelayMS = 20;
+//———————ENUM————————————
+enum COMPTYPE { Drawer, Phyics, KeyWacther, CurWacther };
+enum MESSAGE{NULLER};
+
+//_______________Json____________________;
+struct Flag
+{  //以后所有的状态参数都写在这里,感觉可以改成联合体，节约内存
+    SDL_Scancode keywatcher = SDL_SCANCODE_UNKNOWN;
+};
+
+struct PhyJson
+{   //把物理数据抽象出来,并进行预先赋值
+    SDL_Point velocity = { 0,0 };
+    SDL_Point center= { 0,0 };
+    bool Rotated=false;
+    float angle=0;
+    float RotationSpeed=0;
+    int width=10;
+    int height=10;
+};
+
+class Comp
+{
+public:
+    Comp(PhyJson  jsoninput,COMPTYPE _comptype) :compphy(jsoninput) 
+    {
+        comptype = _comptype;
+    }
+    //用在PROCESSINPUT，要检测的按键
+    //显然要检测的案件不属于PHY那么就给它放到flag里传递  
+    virtual bool KeyWatcher(SDL_Scancode _scancode) {
+        cout << "Havnt override!" << endl;
+        return false;
+    }
+    virtual void Update(float deltime) {
+        cout << "Havnt override!" << endl;
+    }
+    virtual void Draw(SDL_Renderer* renderer)
+    {
+        cout << "Havnt override!" << endl;
+    }
+    COMPTYPE GetCompType()
+    {
+        return comptype;
+    }
+    //这个虚函数用来调用子类的LoadingPhyJson函数
+    //这个虚函数用来调用子类的Flag更新函数
+    PhyJson compphy;
+    Flag compflag;
+private:
+    COMPTYPE comptype;
+};
+
+class DrawComp :public Comp
+{
+public:
+    DrawComp(PhyJson jsoninput, SDL_Texture* texture) :
+        Comp(jsoninput, COMPTYPE::Drawer)
+    {
+        mtexture = texture;
+    }
+    ~DrawComp()
+    {
+        SDL_DestroyTexture(mtexture);
+    }
+    void Draw(SDL_Renderer* renderer) override {
+        if (mtexture)
+        {
+            int screenX = compphy.center.x - compphy.width / 2;
+            int screenY = compphy.center.y - compphy.height / 2;
+            SDL_Rect destRect = { screenX, screenY,compphy.width,compphy.height };
+            SDL_RenderCopyEx(renderer, mtexture, nullptr, &destRect,
+                compphy.angle, nullptr, SDL_FLIP_NONE);
+            return;
+        }
+        cout << "Texture Not include!" << endl;
+    }
+    SDL_Texture* mtexture;
+};
+
+class SpriteComp :public Comp
+{
+public:
+    SpriteComp(PhyJson jsoninput, SDL_Texture* texture) :
+        Comp(jsoninput, COMPTYPE::Drawer)
+    {
+        mtexture = texture;
+    }
+    ~SpriteComp()
+    {
+        SDL_DestroyTexture(mtexture);
+    }
+    void Draw(SDL_Renderer* renderer) override {
+        if (mtexture)
+        {
+            int screenX = compphy.center.x - compphy.width / 2;
+            int screenY = compphy.center.y - compphy.height / 2;
+            SDL_Rect destRect = { screenX, screenY,compphy.width,compphy.height };
+            SDL_RenderCopyEx(renderer, mtexture, nullptr, &destRect,
+                compphy.angle, nullptr, SDL_FLIP_NONE);
+            return;
+        }
+        cout << "Texture Not include!" << endl;
+    }
+    SDL_Texture* mtexture;
+};
+
+//一个key watch com组件只能监听一个按键  
+class KeyWatchComp:public Comp
+{
+public:
+    KeyWatchComp(PhyJson _deltajson,SDL_Scancode _code):
+        Comp(_deltajson,COMPTYPE::KeyWacther)
+    {
+        compflag.keywatcher = _code;
+    }
+    bool KeyWatcher(SDL_Scancode _scancode) override
+    {
+        if (_scancode == compflag.keywatcher)
+            return true;
+        return false;
+    }
+ };
+
+class BallPhyComp :public Comp
+{
+public:
+    BallPhyComp(PhyJson inputJson,int R) :Comp(inputJson, Phyics), r(R)
+    {
+        left = { compphy.center.x - r,compphy.center.y };
+        right = { compphy.center.x + r,compphy.center.y };
+        top = { compphy.center.x,compphy.center.y - r };
+        buttom = { compphy.center.x,compphy.center.y + r };
+    }
+    PhyJson PhyJsonGenerate()
+    {
+        return compphy;
+    }
+    //如何跨对象访问数据也是很重要，这里偷个懒，就把rect放在全局变量区好访问吧
+    //由于 游戏状态计算函数update已经写死了， 所以我们需要在这里 就把update函数写完 
+    //所以，我打算把把所有的 矩形在update时全都记录在 最上方的全局变量中 
+    // 这样在进行球的物理计算时只需要立变全局变量即可   
+ 
+    void Update(float deltime) override
+    {
+        compphy.center.x += (int)(compphy.velocity.x * deltime);
+        compphy.center.y += (int)(compphy.velocity.y * deltime);
+        if (compphy.Rotated)
+        {
+            compphy.angle += deltime * compphy.RotationSpeed;
+        }
+        //终于知道错哪了！
+        //四个点的参数在update中没有刷新！所以一直是最开始的参数，当然判定失效了
+        left = { compphy.center.x - r,compphy.center.y };
+        right = { compphy.center.x + r,compphy.center.y };
+        top = { compphy.center.x,compphy.center.y - r };
+        buttom = { compphy.center.x,compphy.center.y + r };
+        for (auto iter : WallRect)
+        {
+            if (SDL_PointInRect(&left, &iter) && compphy.velocity.x < 0)
+                         compphy.velocity.x *= -1;
+            if (SDL_PointInRect(&right, &iter) && compphy.velocity.x > 0)
+                         compphy.velocity.x *= -1;
+            if (SDL_PointInRect(&top, &iter) && compphy.velocity.y < 0)
+                         compphy.velocity.y *= -1;
+            if (SDL_PointInRect(&buttom,&iter) && compphy.velocity.y > 0)
+                         compphy.velocity.y *= -1;
+               
+        }
+    }
+    int r;
+    SDL_Point left;
+    SDL_Point right;
+    SDL_Point top;
+    SDL_Point buttom;
+};
+
+class WallPhyComp:public Comp
+{
+public:
+    WallPhyComp(PhyJson inputjson):Comp(inputjson, Phyics)
+    {
+        wallrect = { inputjson.center.x - inputjson.width / 2,
+                   inputjson.center.y - inputjson.height / 2,
+                   inputjson.width,inputjson.height };
+    }
+    //在这里加上把rect上传到全局变量的功能  
+    void Update(float deltime) override
+    {
+        compphy.center.x += (int)(compphy.velocity.x * deltime);
+        compphy.center.y += (int)(compphy.velocity.y * deltime);
+        if (compphy.Rotated)
+        {
+            compphy.angle += deltime * compphy.RotationSpeed;
+        }
+        //记得刷新自有量
+        wallrect = {compphy.center.x - compphy.width / 2,
+                   compphy.center.y - compphy.height / 2,
+                   compphy.width,compphy.height };
+
+        WallRect.push_back(wallrect);
+    }
+
+    SDL_Rect wallrect;
+};
+
+class Actor
+{
+public:
+    Actor(PhyJson actorjson):
+         ActorJson(actorjson)
+    {
+        CompStore.clear();
+    }
+    //——————PHY————————
+    //1.28重要函数:
+    Comp* LookFor(COMPTYPE _type)
+    {
+        for (auto iter : CompStore)
+        {
+            if (iter->GetCompType() == _type)
+                return iter;
+        }
+        return NULL;
+    }
+    //寻找第X个某型组件:x:1,2,3.....
+    Comp* LookFor(COMPTYPE _type, int x)
+    {
+        int i = 0;
+        for (auto iter : CompStore)
+        {
+            if (iter->GetCompType() == _type)
+            {
+                i++;
+                if (i == x)
+                    return iter;
+            }
+        }
+        return NULL;
+    }
+    //查看对象有某型的组件一共多少个
+    int LookCompTypeNum(COMPTYPE _type) {
+        int num = 0;
+        for (auto iter : CompStore)
+            if (iter->GetCompType() == _type)
+                num++;
+        return num;
+
+    }
+    //ACTOR的update是基于演员的组件历遍完成的
+    void ActorInPutKey(SDL_Scancode _scancode)
+    {
+        for (int i = 1; i <=LookCompTypeNum(KeyWacther); i++)
+        {
+            auto iter = LookFor(KeyWacther,i);
+            //可以看出，这个框架不支持单对象的双按键检测
+            if (iter->KeyWatcher(_scancode))
+            {
+                //在这里直接改变actor JSON即可啊
+                ActorJson.center.x += iter->compphy.center.x;
+                ActorJson.center.y += iter->compphy.center.y;
+                break;
+            }
+        }
+        
+    }
+    void ActorUpdate(float deltaTime)
+    {
+        auto iter = LookFor(Phyics);
+        iter->compphy = ActorJson;//接着按键检测，把数据继承
+        iter->Update(deltaTime);//接着做物理模拟
+        ActorJson = iter->compphy;//然后在把模拟的数据导回来
+    }
+    void ActorOutPut()
+    {
+        auto iter = LookFor(Drawer);
+        iter->Draw(renderer);
+        iter->compphy = ActorJson;
+    }
+    PhyJson ActorJson;
+    vector<Comp*> CompStore;
+};
+
+class Game
+{
+public:
+    Game()
+    {
+        IsRunning = true;
+        mTicksCount = 0;
+    }
+    bool Initialize()
+    {
+        int sdlresult = SDL_Init(SDL_INIT_VIDEO);
+        sdlresult += IMG_Init(IMG_INIT_PNG);
+        if (sdlresult < 0)
+        {
+            SDL_Log("Loading failed!:%s", SDL_GetError());
+        }
+        win = SDL_CreateWindow("Pong!", 100, 100,WINWIDTH, WINHEIGHT, SDL_WINDOW_SHOWN);
+        renderer = SDL_CreateRenderer(win, -1,
+            SDL_RENDERER_ACCELERATED);
+        surf = IMG_Load("PaddleBall.png");
+        if (surf == NULL)
+        {
+            SDL_Log("cannot find png!\n");
+            return false;
+        }
+        //使用材质作为徽标
+        SDL_SetWindowIcon(win, surf);
+        return true;
+    }
+    void RunLoop()
+    {
+        while (IsRunning)
+        {
+            ProcessInput();
+            UpdateGame();
+            Generateoutput();//一般把图形绘制代码放在这里
+            SDL_Delay(DelayMS);
+            //一般的即使生成不加这个delay
+        }
+    }
+    void Shutdown()
+    {
+        SDL_DestroyWindow(win);
+        SDL_DestroyRenderer(renderer);
+        //TTF_CloseFont(font);
+        SDL_FreeSurface(surf);
+        SDL_Quit();//关闭这个库
+    }
+    //_______________
+    void ProcessInput();
+    void UpdateGame();
+    void Generateoutput();
+    
+    Uint32 mTicksCount;
+    bool IsRunning;
+    //___________________________
+    vector<Actor*>           mActors;
+    vector<SpriteComp*>  SpriteStore;
+
+};
+//_______________________________________________
+Actor ActorInitBall();
+SpriteComp BackRoundSpriteInit();
+Actor TopWallInit();
+Actor ButtomWallInit();
+Actor PaddleLeft();
+Actor PaddleRight();
+//___________________________________________
+int main(int argc, char* argv[])
+{
+    Game game;
+    bool success = game.Initialize();
+    //_______________________________
+    SpriteComp backround = BackRoundSpriteInit();
+    game.SpriteStore.push_back(&backround);
+    //_______________________________
+    Actor pinpong = ActorInitBall();
+    Actor TopWall = TopWallInit();
+    Actor ButtomWall = ButtomWallInit();
+    Actor paddleleft = PaddleLeft();
+    Actor paddleright = PaddleRight();
+    game.mActors.push_back(&TopWall);
+    game.mActors.push_back(&ButtomWall);
+    game.mActors.push_back(&paddleleft);
+    game.mActors.push_back(&paddleright);
+    game.mActors.push_back(&pinpong);
+    //注意对象注入顺序，先注入的先画
+    //把Wall的对象在Ball之前注入
+    //1_28 没在ball对象之前把wall注入 导致ball无法完全历遍所有的墙  
+    if (success)
+    {
+        game.RunLoop();
+    }
+    game.Shutdown();
+    return 0;
+}
+
+void Game::ProcessInput()
+{
+    SDL_Event event; 
+    while (SDL_PollEvent(&event))
+    {
+        //event会储存从消息队列里移除的消息
+        switch (event.type)
+        {
+        case SDL_QUIT:
+            IsRunning = false;
+            break;
+        case SDL_KEYDOWN:
+            SDL_Scancode code = event.key.keysym.scancode;
+            for (auto iter = mActors.begin();
+                iter != mActors.end();
+                iter++)
+                (*iter)->ActorInPutKey(code);
+            break;
+        }
+    }
+}
+
+void Game::UpdateGame()
+{
+    float deltaTime = (SDL_GetTicks() - mTicksCount) / 1000.0f;
+    mTicksCount = SDL_GetTicks();
+
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)
+    {        
+        (*iter)->ActorUpdate(deltaTime);
+        //而且记得，把Wall的对象在Ball之前注入
+    }
+    //记得clear vector
+    WallRect.clear();
+}
+
+void Game::Generateoutput()
+{
+    SDL_RenderClear(renderer); // 清空渲染器
+    SDL_SetRenderDrawColor(renderer, 0, 120, 215, 100);
+    //精灵的绘画
+    for (auto iter = SpriteStore.begin();
+        iter != SpriteStore.end();
+        iter++)
+    {
+        (*iter)->Draw(renderer);
+    }
+    
+    //演员的绘画
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)//对象历遍
+    {
+        (*iter)->ActorOutPut();
+    }
+    SDL_RenderPresent(renderer);
+}
+//________________________________
+Actor ActorInitBall()
+{
+    PhyJson command;
+    command.center = { 220,170 };
+    command.Rotated = true;
+    command.width = 30;
+    command.height = 30;
+    command.RotationSpeed = 120;
+    command.velocity = { 240,245 };
+    Actor pinpong(command);
+
+    surf = IMG_Load("pinpong.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+
+    Comp* tempcomp = new BallPhyComp{ command,command.width / 2 };
+    pinpong.CompStore.push_back(tempcomp);
+
+    Comp* tempprite = new DrawComp{ command,texture };
+    pinpong.CompStore.push_back(tempprite);
+
+    return pinpong;
+}
+
+SpriteComp BackRoundSpriteInit()
+{
+    PhyJson command;
+    command.center = { WINWIDTH / 2,WINHEIGHT / 2 };
+    command.width = WINWIDTH;
+    command.height = WINHEIGHT;
+
+    surf = IMG_Load("table.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+
+    //Comp* tempprite = new SpriteComp{ command,texture };
+   //好奇我如果没有这段代码会不会 导致图像失效  
+    SpriteComp backround(command, texture);
+
+    return backround;
+}
+
+Actor TopWallInit()
+{
+    PhyJson command;
+    command.center = { WINWIDTH / 2,-thickness / 2 };
+    command.width = WINWIDTH;
+    command.height = thickness;
+    Actor Wall(command);
+
+
+    //物理引擎
+    Comp* tempphy = new WallPhyComp{ command };
+    Wall.CompStore.push_back(tempphy);
+
+    surf = IMG_Load("wall.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    //这个框架的缺点是：一个对象，一个图片
+    Comp* tempprite = new SpriteComp{ command,texture };
+    Wall.CompStore.push_back(tempprite);
+
+    return Wall;
+}
+
+Actor ButtomWallInit()
+{
+    PhyJson command;
+    command.center = { WINWIDTH / 2,WINHEIGHT + thickness / 2 };
+    command.width = WINWIDTH;
+    command.height = thickness;
+    Actor Wall(command);
+
+    //物理引擎
+    Comp* tempphy = new WallPhyComp{ command };
+    Wall.CompStore.push_back(tempphy);
+
+    surf = IMG_Load("wall.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    //这个框架的缺点是：一个对象，一个图片
+    Comp* tempprite = new SpriteComp{ command,texture };
+    Wall.CompStore.push_back(tempprite);
+
+
+    return Wall;
+}
+
+Actor PaddleLeft()
+{
+    PhyJson command;
+    command.center = { WINWIDTH / 20,3 * WINHEIGHT / 5 };
+    command.width = thickness;
+    command.height = Paddlength;
+    Actor Wall(command);
+    //W键监听：
+    PhyJson delta;
+    delta.center.y = -PaddleSpeed;
+    Comp* keyComp = new KeyWatchComp{ delta ,SDL_SCANCODE_W };
+    Wall.CompStore.push_back(keyComp);
+    //S键监听
+    delta.center.y = PaddleSpeed;
+    Comp* keyCompII = new KeyWatchComp{ delta ,SDL_SCANCODE_S };
+    Wall.CompStore.push_back(keyCompII);
+
+    //物理引擎
+    Comp* tempphy = new WallPhyComp{ command };
+    Wall.CompStore.push_back(tempphy);
+
+    surf = IMG_Load("Paddle.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    //这个框架的缺点是：一个对象，一个图片
+    Comp* tempprite = new SpriteComp{ command,texture };
+    Wall.CompStore.push_back(tempprite);
+
+    return Wall;
+}
+
+Actor PaddleRight()
+{
+    PhyJson command;
+    command.center = { 18 * WINWIDTH / 20,2 * WINHEIGHT / 5 };
+    command.width = thickness;
+    command.height = Paddlength;
+    Actor Wall(command);
+
+    //up键监听：
+    PhyJson delta;
+    delta.center.y = -PaddleSpeed;
+    Comp* keyComp = new KeyWatchComp{ delta ,SDL_SCANCODE_UP };
+    Wall.CompStore.push_back(keyComp);
+    //down键监听
+    delta.center.y = PaddleSpeed;
+    Comp* keyCompII = new KeyWatchComp{ delta ,SDL_SCANCODE_DOWN };
+    Wall.CompStore.push_back(keyCompII);
+
+    //物理引擎
+    Comp* tempphy = new WallPhyComp{ command };
+    Wall.CompStore.push_back(tempphy);
+
+    surf = IMG_Load("Paddle.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    //这个框架的缺点是：一个对象，一个图片
+    Comp* tempprite = new SpriteComp{ command,texture };
+    Wall.CompStore.push_back(tempprite);
+
+    return Wall;
+}
+
+
+
+
+
+
+
+
+
+/*
+* 日记：
+* 1/27
+*加入了ID枚举和管理
+*重写了大部分函数
+* 借助C++虚函数重写特性对COMP类重写，
+* ACTOR加入了comp向量组，可以更方便更安全的操作组件
+*意识到了多态虚函数重写的顺序的重要作用，解决了内存堆栈读取冲突问题
+*
+* 意识到了画面，物理不同步的情况
+*
+* 有必要把compound type给封装起来 ,否则对比的时候如果少写一个等于号那就是改变了属性了
+*
+* 有必要在game中存储精灵，毕竟做粒子特效不能专门给每个粒子注册一个对象吧
+
+*1/28
+* 将所有代码重构一次，让目标更明确,结构更简单
+*
+* 删除了枚举类型POST ,ORDER，ACRORID，WATCHER（直接使用SDL_scancode）
+* 删去了CompType中的NULLER值
+*
+* 保留了message枚举，考虑它的用途
+* 把所有的枚举类型命名改为全大写
+*
+* actor中加入了返回指定comptype指针的函数（最重要更新）
+*
+* 给COMP类加入了Watch函数，让COMP更好的对应游戏进行的三个主函数（重要更新）
+* 感觉sprite函数的update函数不是很重要啊，毕竟总要和PHY组件通信，保持一致
+* 为了以后实现粒子效果方便保留精灵绘画函数额外创造DrawComp类
+*
+* 更好的封装了comp类的COMPTYPE参数，（变为私有属性，GetCompType才可以访问）
+* 让编写程序时 对COMPTYPE的对比不会笔误，写成改变COMPTYPE
+*
+* 更改了comp的默认构造函数，让构建新的组件类时不会忘记确定compare type参数
+*
+* 让comp类中的update函数变为虚函数（而不是纯虚函数），因为发现不是所有的构建都要用到它
+*
+* 删去了COMP类中的virtual void Call_LoadingPhy(PhyJson input)函数
+* 删去了COMP类中的virtual void Call_LoadingFlag(Flag input)函数
+* 毕竟Compound类中的 PHY Johnson 本来可以直接访问 ，和一系列无用的相关代码
+*
+* 删去了bool PointInRect(SDL_Point pt, SDL_Rect rect)，使用SDL自带的函数
+* 
+* 
+* 1/29
+* ACTORID还是很重要的，便与差错
+*/
+
+
+//注意要点
+/*1.phy组件的载入要在drawer前（原因，actord update函数中的寄存交换模块）
+* 2，对象注入游戏，先注入的，先画（底部）
+*/
+
+
+
+
+

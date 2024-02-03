@@ -1,0 +1,348 @@
+//
+这是2024年1月26日下午三点的版本主要实现的功能是显示球桌和求喜欢的底层是经营显示球的物理效果和墙的物理效果 
+
+//
+
+#include <iostream>
+#include <math.h>
+#include <unordered_set>
+#include <vector>
+#include <string>
+#include "SDL.h"
+#include "SDL_image.h"
+#include "SDL_ttf.h"
+using namespace std;
+
+//全局变量区
+SDL_Window* win = NULL;
+SDL_Renderer* renderer = NULL;
+SDL_Surface* surf = NULL;
+SDL_Surface* icon = NULL;
+SDL_Texture* texture = NULL;
+int width = 1024;
+int height = 526;
+int thickness = 15;
+int Paddlength = 200;
+
+
+//在这里写几个模块
+class SpriteCompenment
+{
+public:
+    enum POST {FULLSCREEN,ORIGINAL };
+    SpriteCompenment(SDL_Texture* texture,int Rotation, int RotationSpeed,
+        SDL_Point position = { 0,0 },
+        int mDrawOrder = 10, POST post = FULLSCREEN)//数字越小越先画
+    {
+        this->mtexture = texture;
+        this->mDrawOrder = mDrawOrder;
+        this->Position = position;//默认中心位置{0，0}
+        this->post = post;
+        this->Rotation = Rotation;
+        this->RotationSpeed = RotationSpeed;
+        //获得宽高
+        SDL_QueryTexture(texture, nullptr, nullptr, &twidth, &theight);
+    }
+    void Update(float deltime)
+    {
+        if (Rotation != 0)
+        {
+            Rotation += (int)(deltime * RotationSpeed+1);
+        }
+    }
+    //继承 构造函数的写法
+    ~SpriteCompenment() 
+    {
+        SDL_DestroyTexture(mtexture);
+    }
+    void Draw(SDL_Renderer* renderer)
+    {
+        if (mtexture&&!Rotation)
+        {
+            // 计算屏幕上的绝对位置
+            int screenX = Position.x - twidth / 2;  // 根据精灵宽度和位置计算屏幕上的 x 坐标
+            int screenY = Position.y - theight / 2;  // 根据精灵高度和位置计算屏幕上的 y 坐标=
+            SDL_Rect destRect = { screenX, screenY, twidth, theight };
+            switch (post)
+            {
+            case ORIGINAL:
+                SDL_RenderCopy(renderer, mtexture, nullptr, &destRect);
+                break;
+            case FULLSCREEN:
+                SDL_RenderCopy(renderer, mtexture, NULL , NULL);
+                break;
+            }
+        }
+        if (mtexture && Rotation)
+        {
+            int screenX = Position.x - twidth / 2;  // 根据精灵宽度和位置计算屏幕上的 x 坐标
+            int screenY = Position.y - theight / 2;  // 根据精灵高度和位置计算屏幕上的 y 坐标=
+            SDL_Rect destRect = { screenX, screenY, twidth, theight };
+            double angle = (double)Rotation;
+            switch (post)
+            {
+            case ORIGINAL:
+                SDL_RenderCopyEx(renderer, mtexture, nullptr, &destRect,angle,nullptr,SDL_FLIP_NONE);
+                break;
+            case FULLSCREEN:
+                SDL_RenderCopyEx(renderer, mtexture, NULL, NULL, angle, nullptr, SDL_FLIP_NONE);
+                break;
+            }
+        }
+
+    }
+    void SetTextrue(SDL_Texture* texture)//注意，自动刷新宽高
+    {
+        mtexture = texture;
+        SDL_QueryTexture(texture, nullptr, nullptr, &twidth, &theight);
+    }
+    void ReCheckMiddlePosition()
+    {
+        //将精灵中心归于中心
+        Position.x = twidth / 2;
+        Position.y = theight / 2;
+    }
+   
+    void SetID(string id)
+    {
+        ID = id;
+    }
+    string GetID()
+    { 
+        return ID;
+    }
+    SDL_Point Position;//这个是中心位置
+    int mDrawOrder;
+    SDL_Texture* mtexture;
+    int twidth;
+    int theight; 
+    POST post;
+    int Rotation;
+    int RotationSpeed;
+
+    //技术有限，要模块化看来只能使用这种拼石块的方式了
+    //为了标记石块，给每一个对象一个ID ，这样就能从许多容器中拼出来了
+private: 
+    string ID;
+};
+
+class PhysicsCompenment_Ball
+{
+public:
+    PhysicsCompenment_Ball(SDL_Point vpt,SDL_Point pos,int R):velocity(vpt),Position(pos),r(R)
+    {
+        left = { Position.x - r,Position.y };
+        right = { Position.x + r,Position.y };
+        top = { Position.x,Position.y - r };
+        buttom = { Position.x,Position.y + r };
+    }
+    int Collision(SDL_Rect* rect)//左边：-1 右边+1，上面：-2 下面：+2
+    {
+        if (SDL_PointInRect(&left, rect) && velocity.x < 0)
+            return  -1;
+        if (SDL_PointInRect(&right, rect) && velocity.x > 0)
+            return  1;
+        if (SDL_PointInRect(&left, rect) && velocity.y < 0)
+            return -2;
+        if (SDL_PointInRect(&left, rect) && velocity.y > 0)
+            return  2;
+          
+    }
+    void  update(float deltime) {
+        Position.x += (int)(velocity.x * deltime);
+        Position.y += (int)(velocity.y * deltime);
+    }
+
+    void SetID(string id)
+    {
+        ID = id;
+    }
+    string GetID()
+    {
+        return ID;
+    }
+    int r;
+    SDL_Point velocity;
+    SDL_Point Position;
+    SDL_Point left;
+    SDL_Point right;
+    SDL_Point top;
+    SDL_Point buttom;
+private:
+    string ID ;
+};
+
+class PhysicsCompenment_Wall
+{
+public:
+    PhysicsCompenment_Wall(SDL_Point center, int wallwide, int wallheight) :
+        center(center), wallwide(wallwide), wallheight(wallheight)
+    {
+        rect = { center.x - wallwide / 2,center.y - wallheight / 2
+                 ,wallwide,wallheight };
+    }
+
+    void SetID(string id)
+    {
+        ID = id;
+    }
+    string GetID()
+    {
+        return ID;
+    }
+    SDL_Point center;
+    SDL_Rect rect;
+    int wallwide;
+    int wallheight;
+private:
+    string ID ;
+};
+
+
+
+class Game
+{
+public:
+    //enum Type{ingame,intitle};
+    Game()
+    {
+        IsRunning = true;
+        mTicksCount = 0;
+    }
+    bool Initialize()
+    {
+        int sdlresult = SDL_Init(SDL_INIT_VIDEO);
+        sdlresult += IMG_Init(IMG_INIT_PNG);
+        if (sdlresult < 0)
+        {
+            SDL_Log("Loading failed!:%s", SDL_GetError());
+        }
+        win = SDL_CreateWindow("Pong!", 100, 100, width, height, SDL_WINDOW_SHOWN);
+        renderer = SDL_CreateRenderer(win, -1,
+            SDL_RENDERER_ACCELERATED);
+        surf = IMG_Load("PaddleBall.png");
+        if (surf == NULL)
+        {
+            SDL_Log("cannot find png!\n");
+            return false;
+        }
+        //使用材质作为徽标
+        SDL_SetWindowIcon(win, surf);
+        return true;
+    }
+    void RunLoop()
+    {
+        while (IsRunning)
+        {
+            ProcessInput();
+            UpdateGame();
+            Generateoutput();//一般把图形绘制代码放在这里
+        }
+    }
+    void Shutdown()
+    {
+        SDL_DestroyWindow(win);
+        SDL_DestroyRenderer(renderer);
+        //TTF_CloseFont(font);
+        SDL_FreeSurface(surf);
+        SDL_Quit();//关闭这个库
+    }
+    void AddSprite(SpriteCompenment* sprite)
+    {
+        int myDrawOrder = (*sprite).mDrawOrder;
+        auto iter = mSprites.begin();
+        for (; iter != mSprites.end();
+            ++iter)
+        {
+            if (myDrawOrder < (*iter)->mDrawOrder)
+                break;
+        }
+        mSprites.insert(iter, sprite);
+        //可以使用迭代器将对象插入容器  
+    }
+    size_t SpritesNum()
+    {
+        return mSprites.size();
+    }
+
+
+    //_______________
+
+
+    void ProcessInput()
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            //event会储存从消息队列里移除的消息
+            switch (event.type)
+            {
+            case SDL_QUIT:
+                IsRunning = false;
+                break;
+            }
+        }
+    }
+    void UpdateGame()
+    {
+        float deltaTime = (SDL_GetTicks() - mTicksCount) / 1000.0f;
+        mTicksCount = SDL_GetTicks();
+        auto iter = mSprites.begin();
+        for (; iter != mSprites.end(); iter++)
+        {
+            (*iter)->Update(deltaTime);
+        }
+
+    }
+    void Generateoutput()
+    {
+
+        SDL_RenderClear(renderer); // 清空渲染器
+        SDL_SetRenderDrawColor(renderer, 0, 120, 215, 100);
+        auto iter = mSprites.begin();
+        for (; iter != mSprites.end(); iter++)
+        {
+            (*iter)->Draw(renderer);
+        }
+        SDL_RenderPresent(renderer);
+    }
+    Uint32 mTicksCount;
+    bool IsRunning ;
+    //________________
+    vector<SpriteCompenment*> mSprites;
+    //int flag;
+};
+
+int main(int argc, char* argv[])
+{
+    Game game;
+    bool success = game.Initialize();
+    surf = IMG_Load("pinpong.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SpriteCompenment pinpong(texture, 1, 1, { 500,350 }, 15, SpriteCompenment::ORIGINAL);
+    pinpong.twidth = 30;
+    pinpong.theight = 30;
+    game.AddSprite(&pinpong);
+
+
+    surf = IMG_Load("table.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+    
+    SpriteCompenment backround(texture,0,0);
+    backround.ReCheckMiddlePosition();
+    game.AddSprite(&backround);
+    //_____________________________
+    
+    //________________________
+    cout << game.SpritesNum() << endl;
+
+   /* SpriteCompenment Moon(&temp, 20);
+    SpriteCompenment Rocket(&temp, 30);*/
+   
+    if (success)
+    {
+        game.RunLoop();
+    }
+    game.Shutdown();
+    return 0;
+}

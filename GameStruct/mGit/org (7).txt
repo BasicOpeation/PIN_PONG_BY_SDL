@@ -1,0 +1,431 @@
+#include <iostream>
+#include <math.h>
+#include <unordered_set>
+#include <vector>
+#include <string>
+#include "SDL.h"
+#include "SDL_image.h"
+#include "SDL_ttf.h"
+using namespace std;
+
+//全局变量区
+SDL_Window* win = NULL;
+SDL_Renderer* renderer = NULL;
+SDL_Surface* surf = NULL;
+SDL_Surface* icon = NULL;
+SDL_Texture* texture = NULL;
+int WINWIDTH = 1024;
+int WINHEIGHT = 526;
+int thickness = 15;
+int Paddlength = 200;
+int DelayMS = 20;
+
+
+/*
+* 日记：
+* 1/27 
+*加入了ID枚举和管理
+*重写了大部分函数
+* 借助C++虚函数重写特性对COMP类重写，
+* ACTOR加入了comp向量组，可以更方便更安全的操作组件
+*意识到了多态虚函数重写的顺序的重要作用，解决了内存堆栈读取冲突问题 
+
+*/
+//_______________Json____________________
+enum POST { FullScreen, Original };
+enum ORDER { Buttom = 5, Middle = 10, Top = 15 };
+enum MESSAGE{MNull,MPost,MOrder};
+//message用于指出Flag中哪个信息是有用的
+//对对象ID也进行统一管理
+enum ActorID{Ball,Wall,Paddle,BackRound};
+enum CompType{Nuller,Drawer,Phyics};
+struct Flag
+{  //以后所有的状态参数都写在这里
+    MESSAGE message;
+    POST post;
+    ORDER order;
+};
+
+struct PhyJson
+{
+    //把物理数据抽象出来
+    SDL_Point velocity;
+    SDL_Point center;//中心位置
+    bool Rotated;
+    float angle;
+    float RotationSpeed;
+    int width;
+    int height;
+};
+//给出标准JSON生成函数，免得手写无用的JSON
+Flag StandFlag(MESSAGE inmessage)
+{
+    Flag stand;
+    stand.post = POST::Original;
+    stand.order = ORDER::Top;
+    stand.message = inmessage;
+
+    return stand;
+}
+
+PhyJson StandPhyJson()
+{
+    PhyJson stand;
+    stand.velocity = { 0,0 };
+    stand.center = { 0,0 };
+    stand.Rotated = false;
+    stand.angle = 0;
+    stand.RotationSpeed = 0;
+    stand.width = 10;
+    stand.height = 10;
+    return stand;
+}
+
+class Comp
+{
+public:
+    Comp(PhyJson  jsoninput) :compphy(jsoninput) 
+    {
+        compflag = StandFlag(MNull);
+        comptype = Nuller;
+    }
+    Comp(PhyJson  jsoninput, CompType _intype) :compphy(jsoninput)
+    {
+        compflag = StandFlag(MNull);
+        comptype = _intype;
+    }
+    virtual void Update(float deltime) = 0;//纯虚函数
+   
+    //这个虚函数用来调用子类的draw函数 
+    virtual void Call_Draw(SDL_Renderer* renderer)
+    {
+        cout << "Havnt override!" << endl;
+    }
+    //这个虚函数用来调用子类的LoadingPhyJson函数
+    virtual void Call_LoadingPhy(PhyJson input)
+    {
+        cout << "Havnt override!" << endl;
+    }
+    //这个虚函数用来调用子类的Flag更新函数
+    virtual void Call_LoadingFlag(Flag input)
+    {
+        cout << "Havnt override!" << endl;
+    }
+    //通信函数也是很重要的
+    virtual PhyJson Call_GenPhyJson()
+    {
+        cout << "Havnt override!" << endl;
+        return StandPhyJson();
+    }
+    PhyJson compphy;
+    Flag compflag;
+    CompType comptype;
+};
+
+class SpriteComp :public Comp
+{
+public:
+    SpriteComp(PhyJson jsoninput, SDL_Texture* texture):
+        Comp(jsoninput)
+    {
+        mtexture = texture;
+        post = POST::Original;
+        comptype = CompType::Drawer;
+    }
+    ~SpriteComp()
+    {
+        SDL_DestroyTexture(mtexture);
+    }
+    void LoadingPhyJson(PhyJson input)
+    {
+        compphy = input;
+    }
+    void LoadingFlag(Flag input)
+    {
+        post = input.post;
+    }
+    void Draw(SDL_Renderer* renderer)
+    {
+        if (mtexture)
+        {
+
+            int screenX = compphy.center.x - compphy.width / 2;
+            int screenY = compphy.center.y - compphy.height / 2;
+            SDL_Rect destRect = { screenX, screenY,compphy.width,compphy.height };
+            switch (post)
+            {
+            case Original:
+                SDL_RenderCopyEx(renderer, mtexture, nullptr, &destRect,
+                    compphy.angle, nullptr, SDL_FLIP_NONE);
+                break;
+            case FullScreen:
+                SDL_RenderCopyEx(renderer, mtexture, NULL, NULL,
+                    compphy.angle, nullptr, SDL_FLIP_NONE);
+                break;
+            }
+        }
+
+    }
+    //重写区
+    void Call_LoadingPhy(PhyJson input) override
+    {
+        LoadingPhyJson(input);
+    }
+    void Call_LoadingFlag(Flag input) override {
+        LoadingFlag(input);
+    }
+    void Call_Draw(SDL_Renderer* renderer) override {
+        Draw(renderer);
+    }
+    void Update(float deltime) override
+    {
+        compphy.center.x += (int)(compphy.velocity.x * deltime);
+        compphy.center.y += (int)(compphy.velocity.y * deltime);
+        if (compphy.Rotated)
+        {
+            compphy.angle += deltime * compphy.RotationSpeed;
+        }
+    }
+
+    SDL_Texture* mtexture;
+    POST post;
+};
+
+class BallPhyComp :public Comp
+{
+public:
+    BallPhyComp(PhyJson inputJson,int R) :Comp(inputJson), r(R)
+    {
+        left = { compphy.velocity.x - r,compphy.velocity.y };
+        right = { compphy.velocity.x + r,compphy.velocity.y };
+        top = { compphy.velocity.x,compphy.velocity.y - r };
+        buttom = { compphy.velocity.x,compphy.velocity.y + r };
+        comptype = CompType::Phyics;
+    }
+    PhyJson PhyJsonGenerate()
+    {
+        return compphy;
+    }
+    int Collision(SDL_Rect* rect);
+    //重写区
+    PhyJson Call_GenPhyJson() override
+    {
+        return PhyJsonGenerate();
+    }
+    void Update(float deltime) override
+    {
+        compphy.center.x += (int)(compphy.velocity.x * deltime);
+        compphy.center.y += (int)(compphy.velocity.y * deltime);
+        if (compphy.Rotated)
+        {
+            compphy.angle += deltime * compphy.RotationSpeed;
+        }
+    }
+    int r;
+    SDL_Point left;
+    SDL_Point right;
+    SDL_Point top;
+    SDL_Point buttom;
+};
+
+class Actor
+{
+public:
+  
+    Actor(PhyJson actorjson,ActorID inputid):
+         ActorJson(actorjson),actorid(inputid)
+    {
+        CompStor.clear();
+    }
+    //——————PHY————————
+    //ACTOR的update是基于演员的组件历遍完成的
+    void Update(float deltaTime)
+    {
+        for (auto iter : CompStor)
+        {
+            iter->Update(deltaTime);
+            //这个Update函数是comp的，
+            //但是现在为止两个子类（绘画类和球物理模拟类）都没有重写这个函数 
+            //所以根据多态的准则这个update是用于更新子类的
+            //又有问题了：演员类中装载了两个继承comp的子类 那么这个update函数更新是哪个类呢 
+            //1/27:将父类的update函数定义为纯虚函数在子类中重写即可 解决这个 歧义
+
+        }
+    }
+    PhyJson ActorJson;
+    ActorID actorid;
+    vector<Comp*> CompStor;
+};
+
+
+class Game
+{
+public:
+    Game()
+    {
+        IsRunning = true;
+        mTicksCount = 0;
+    }
+    bool Initialize()
+    {
+        int sdlresult = SDL_Init(SDL_INIT_VIDEO);
+        sdlresult += IMG_Init(IMG_INIT_PNG);
+        if (sdlresult < 0)
+        {
+            SDL_Log("Loading failed!:%s", SDL_GetError());
+        }
+        win = SDL_CreateWindow("Pong!", 100, 100,WINWIDTH, WINHEIGHT, SDL_WINDOW_SHOWN);
+        renderer = SDL_CreateRenderer(win, -1,
+            SDL_RENDERER_ACCELERATED);
+        surf = IMG_Load("PaddleBall.png");
+        if (surf == NULL)
+        {
+            SDL_Log("cannot find png!\n");
+            return false;
+        }
+        //使用材质作为徽标
+        SDL_SetWindowIcon(win, surf);
+        return true;
+    }
+    void RunLoop()
+    {
+        while (IsRunning)
+        {
+            ProcessInput();
+            UpdateGame();
+            Generateoutput();//一般把图形绘制代码放在这里
+            SDL_Delay(DelayMS);
+            //一般的即使生成不加这个delay
+        }
+    }
+    void Shutdown()
+    {
+        SDL_DestroyWindow(win);
+        SDL_DestroyRenderer(renderer);
+        //TTF_CloseFont(font);
+        SDL_FreeSurface(surf);
+        SDL_Quit();//关闭这个库
+    }
+    void ProcessInput()
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            //event会储存从消息队列里移除的消息
+            switch (event.type)
+            {
+            case SDL_QUIT:
+                IsRunning = false;
+                break;
+            }
+        }
+    }
+    void UpdateGame();
+    void Generateoutput();
+    
+    Uint32 mTicksCount;
+    bool IsRunning;
+    //___________________________
+    vector<Actor*>      mActors;
+
+};
+
+
+Actor ActorInitBall()
+{
+    PhyJson command = StandPhyJson();
+    command.center = { 20,0 };
+    command.Rotated = true;
+    command.width = 30;
+    command.height = 30;
+    command.RotationSpeed = 120;
+    command.velocity = { 240,245 };
+    Actor pinpong(command,ActorID::Ball);
+
+    surf = IMG_Load("pinpong.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+
+    Comp*  tempprite = new SpriteComp{command,texture};
+    pinpong.CompStor.push_back(tempprite);
+  
+    Comp* tempcomp = new BallPhyComp{command,command.width/2 };
+    pinpong.CompStor.push_back(tempcomp);
+
+    return pinpong;
+}
+
+Actor BackRoundInit()
+{
+    PhyJson command = StandPhyJson();
+    command.center = { WINWIDTH/2,WINHEIGHT/2 };
+    command.width = WINWIDTH;
+    command.height = WINHEIGHT;
+    Actor BackRound(command, ActorID::Ball);
+
+    surf = IMG_Load("table.png");
+    texture = SDL_CreateTextureFromSurface(renderer, surf);
+
+    Comp* tempprite = new SpriteComp{ command,texture };
+    BackRound.CompStor.push_back(tempprite);
+
+    return BackRound;
+}
+
+
+
+int main(int argc, char* argv[])
+{
+    Game game;
+    bool success = game.Initialize();
+    //_______________________________
+    Actor pinpong = ActorInitBall();
+    Actor BackRound = BackRoundInit();
+    game.mActors.push_back(&BackRound);
+    game.mActors.push_back(&pinpong);
+    //注意对象注入顺序，先注入的先画
+    if (success)
+    {
+        game.RunLoop();
+    }
+    game.Shutdown();
+    return 0;
+}
+
+
+
+void Game::UpdateGame()
+{
+    float deltaTime = (SDL_GetTicks() - mTicksCount) / 1000.0f;
+    mTicksCount = SDL_GetTicks();
+
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)
+    {
+        (*iter)->Update(deltaTime);
+    }
+}
+
+void Game::Generateoutput()
+{
+
+    SDL_RenderClear(renderer); // 清空渲染器
+    SDL_SetRenderDrawColor(renderer, 0, 120, 215, 100);
+
+    //演员的绘画
+    for (auto iter = mActors.begin();
+        iter != mActors.end();
+        iter++)//对象历遍
+    {
+        for (auto inter = (*iter)->CompStor.begin();
+            inter!=(*iter)->CompStor.end();
+            inter++)//对象的组件历遍
+        {
+            if ((*inter)->comptype == Drawer)
+            {
+                (*inter)->Call_Draw(renderer);
+            }
+        }
+    }
+    SDL_RenderPresent(renderer);
+}

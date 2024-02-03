@@ -1,0 +1,172 @@
+#include <iostream>
+#include <unordered_set>
+#include <vector>
+#include "SDL.h"
+#include "SDL_image.h"
+#include "SDL_ttf.h"
+using namespace std;
+
+//全局变量区
+SDL_Window* win=NULL;
+SDL_Renderer* renderer=NULL;
+SDL_Surface* surf = NULL;
+
+//组件对象 这个对象专门用来继承
+class Componment
+{
+public:
+    Componment(class Actor* owner, int updateOrder = 100);
+    //说明:这个组件的构造函数首先需要将组建的对象绑定
+    //而后需要注意的是update order函数这可以取决定更新的排序
+    //virtual ~Component();
+
+    virtual void Update(float deltaTime);
+
+    int GetUpdateOrder() const
+    {
+        return updateOrder;
+    }
+private:
+    class Actor* owner;
+    int updateOrder;
+};
+
+class Actor
+{
+public:
+    //枚举actor状态
+    enum State{Eactive,Epaused,EDead};
+    //构造和析构
+    Actor(class Game* game);
+    //说明：将游戏和actor绑定，这样方便调用数据
+    //这种开发模式称为“依赖注入”（对立的面为单例模式）
+    virtual ~Actor();
+    //update function
+    void UpdateCompents(float deltatime);
+    //历遍所有组件并更新
+    void UpdateActor(float deltatime);
+    //基本实现为空，但其子类可以重写这个方法，编写自定义行为
+    void Update(float deltatime);
+    //是上面两个的复合函数
+    //组件注入和移除
+    void AddComponent(Componment* comp);
+    void RemoveComponent(Componment* comp);
+private:
+    State mstate;
+    SDL_Point mPoistion;//actor的中心位置
+    unordered_set<Componment*> mComponent;//组件中心
+
+    float mScale;   //让对象支持缩放（1.0f for 100%）
+    float mRotation;//让对象可以旋转
+    class Game* game;
+
+};
+//这个是游戏主循环，标题页面之类的可以通过继承它实现
+class Game
+{
+public:
+    Game();
+    bool Initialize();
+    void RunLoop();
+    void Shutdown();
+    void AddActor(Actor* actor);
+private:
+    void ProcessInput();
+    void UpdateGame();
+    void Generateoutput();
+    vector<Actor* > gamActors;
+    bool IsRunning;
+    Uint32 mTicksCount;
+};
+
+int main(int argc, char* argv[])
+{
+    Game game;
+    bool success = game.Initialize();
+    if (success)
+    {
+        game.RunLoop();
+    }
+    game.Shutdown();
+    return 0;
+}
+//____________________下面是程序的底层实现______________
+Game::Game()
+{
+    //初始化区
+}
+
+bool Game::Initialize()
+{
+    bool gameInit = SDL_Init(SDL_INIT_VIDEO) && IMG_Init(IMG_INIT_PNG);
+    if (!gameInit)
+    {
+        SDL_Log("%s",SDL_GetError());
+        return -1;
+    }
+    return true;
+}
+
+void Game::RunLoop()
+{
+    while (IsRunning)
+    {
+        ProcessInput();
+        UpdateGame();
+        Generateoutput();//一般把图形绘制代码放在这里
+    }
+}
+
+void Game::Shutdown()
+{
+    //
+    SDL_DestroyWindow(win);
+    SDL_DestroyRenderer(renderer);
+    //TTF_CloseFont(font);
+    SDL_FreeSurface(surf);
+    SDL_Quit();//关闭这个库
+}
+
+void Game::AddActor(Actor* actor)
+{
+    gamActors.emplace_back(actor);
+}
+
+void Game::ProcessInput()
+{
+    //事件监听和更改游戏值
+}
+
+void Game::UpdateGame()
+{
+    float deltaTime = (SDL_GetTicks() - mTicksCount) / 1000.0f;
+    for (auto actor : gamActors)
+    {
+        actor->Update(deltaTime);
+    }
+}
+
+void Game::Generateoutput()
+{
+    //绘画
+}
+
+Componment::Componment(Actor* owner, int updateOrder)
+{
+    
+}
+
+void Componment::Update(float deltaTime)
+{
+
+}
+
+void Actor::AddComponent(Componment* comp)
+{
+    mComponent.insert(comp);
+}
+
+void Actor::RemoveComponent(Componment* comp)
+{
+    mComponent.erase(comp);
+}
